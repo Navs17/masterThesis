@@ -4,3 +4,23 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# checkpoints and large artefacts
+*.pth
+*.pt
+*.ckpt
+*.onnx
+
+# notebook checkpoints
+.ipynb_checkpoints/
+
+# editor / IDE
+.vscode/
+.idea/
+
+# uv / pip caches
+.uv/
+pip-wheel-metadata/
+
+# logs
+*.log
