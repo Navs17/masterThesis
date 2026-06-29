@@ -1,4 +1,5 @@
+from .anomaly import FeatureGaussianAnomalyDetector
 from .backbone import build_backbone
 from .classifier import PillDefectClassifier
 
-__all__ = ["build_backbone", "PillDefectClassifier"]
+__all__ = ["build_backbone", "PillDefectClassifier", "FeatureGaussianAnomalyDetector"]

@@ -1,4 +1,4 @@
-from src.eval import compute_classification_metrics
+from src.eval import compute_classification_metrics, compute_roc_auc
 
 
 def test_perfect_predictions_score_one():
@@ -22,3 +22,10 @@ def test_all_wrong_predictions_score_zero():
 
     assert metrics["accuracy"] == 0.0
     assert metrics["f1"] == 0.0
+
+
+def test_roc_auc_perfect_separation_is_one():
+    y_true = [0, 0, 1, 1]
+    scores = [0.1, 0.2, 0.8, 0.9]
+
+    assert compute_roc_auc(y_true, scores) == 1.0

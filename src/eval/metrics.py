@@ -1,6 +1,6 @@
 """Binary classification metrics for defective/non_defective predictions."""
 
-from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
+from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support, roc_auc_score
 
 
 def compute_classification_metrics(y_true, y_pred):
@@ -16,3 +16,8 @@ def compute_classification_metrics(y_true, y_pred):
         "f1": f1,
         "confusion_matrix": cm.tolist(),
     }
+
+
+def compute_roc_auc(y_true, scores):
+    """scores: higher = more likely the positive (defective) class."""
+    return roc_auc_score(y_true, scores)
