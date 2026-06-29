@@ -6,6 +6,9 @@ Domains:
   tablet         -- Roboflow COCO export with bounding-box labels
                     (defected / no-defect). Only annotated images are used;
                     each image is cropped to its single annotated box.
+                    The export's own val/test split leaves test with only 3
+                    images, so val+test are pooled and re-split 50/50
+                    (stratified by label) into usable val/test sets.
 """
 
 import argparse
@@ -76,51 +79,83 @@ def process_mvtec(zip_path: Path, domain: str, val_fraction: float, seed: int, m
     print(f"[{domain}] train={len(train_files)} val={len(val_files)} test={len(test_files)}")
 
 
-def process_tablet_coco(zip_path: Path, domain: str, manifest: list) -> None:
+def _load_tablet_annotations(z: zipfile.ZipFile, raw_split: str, category_to_label: dict) -> list:
+    ann_path = f"{raw_split}/_annotations.coco.json"
+    if ann_path not in z.namelist():
+        return []
+    ann = json.loads(z.read(ann_path))
+    cats = {c["id"]: c["name"] for c in ann["categories"]}
+    images_by_id = {im["id"]: im for im in ann["images"]}
+
+    entries = []
+    for a in ann["annotations"]:
+        category_name = cats[a["category_id"]]
+        if category_name not in category_to_label:
+            continue
+        entries.append(
+            {
+                "raw_split": raw_split,
+                "category_name": category_name,
+                "label": category_to_label[category_name],
+                "image_info": images_by_id[a["image_id"]],
+                "bbox": a["bbox"],
+            }
+        )
+    return entries
+
+
+def _save_tablet_crop(z: zipfile.ZipFile, entry: dict, domain: str, split: str, manifest: list) -> None:
+    image_info = entry["image_info"]
+    img_bytes = z.read(f"{entry['raw_split']}/{image_info['file_name']}")
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    x, y, w, h = entry["bbox"]
+    left, top = max(0, int(x)), max(0, int(y))
+    right, bottom = min(img.width, int(x + w)), min(img.height, int(y + h))
+    crop = img.crop((left, top, right, bottom))
+
+    fname = f"{Path(image_info['file_name']).stem}.png"
+    dst = PROCESSED_DIR / domain / split / entry["label"] / fname
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    crop.save(dst)
+    manifest.append(
+        {
+            "domain": domain,
+            "split": split,
+            "label": entry["label"],
+            "defect_type": entry["category_name"],
+            "image_path": str(dst.relative_to(PROCESSED_DIR)),
+        }
+    )
+
+
+def process_tablet_coco(zip_path: Path, domain: str, test_fraction: float, seed: int, manifest: list) -> None:
     category_to_label = {"defected": DEFECTIVE, "no-defect": NON_DEFECTIVE}
 
     with zipfile.ZipFile(zip_path) as z:
-        for raw_split in ["train", "valid", "test"]:
-            split = "val" if raw_split == "valid" else raw_split
-            ann_path = f"{raw_split}/_annotations.coco.json"
-            if ann_path not in z.namelist():
-                continue
-            ann = json.loads(z.read(ann_path))
-            cats = {c["id"]: c["name"] for c in ann["categories"]}
-            images_by_id = {im["id"]: im for im in ann["images"]}
+        train_entries = _load_tablet_annotations(z, "train", category_to_label)
+        for entry in train_entries:
+            _save_tablet_crop(z, entry, domain, "train", manifest)
+        print(f"[{domain}] train: {len(train_entries)} annotated images cropped and saved")
 
-            count = 0
-            for a in ann["annotations"]:
-                category_name = cats[a["category_id"]]
-                if category_name not in category_to_label:
-                    continue
-                label = category_to_label[category_name]
+        # The dataset's own valid/test split leaves test with only 3 images,
+        # too small to be a usable held-out set. Pool valid+test together and
+        # re-split 50/50 stratified by label so both val and test are usable.
+        pooled = _load_tablet_annotations(z, "valid", category_to_label) + _load_tablet_annotations(
+            z, "test", category_to_label
+        )
 
-                image_info = images_by_id[a["image_id"]]
-                img_bytes = z.read(f"{raw_split}/{image_info['file_name']}")
-                img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-
-                x, y, w, h = a["bbox"]
-                left, top = max(0, int(x)), max(0, int(y))
-                right, bottom = min(img.width, int(x + w)), min(img.height, int(y + h))
-                crop = img.crop((left, top, right, bottom))
-
-                fname = f"{Path(image_info['file_name']).stem}.png"
-                dst = PROCESSED_DIR / domain / split / label / fname
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                crop.save(dst)
-                manifest.append(
-                    {
-                        "domain": domain,
-                        "split": split,
-                        "label": label,
-                        "defect_type": category_name,
-                        "image_path": str(dst.relative_to(PROCESSED_DIR)),
-                    }
-                )
-                count += 1
-
-            print(f"[{domain}] {split}: {count} annotated images cropped and saved")
+        rng = random.Random(seed)
+        for label in (NON_DEFECTIVE, DEFECTIVE):
+            group = [e for e in pooled if e["label"] == label]
+            rng.shuffle(group)
+            n_test = int(len(group) * test_fraction)
+            test_entries, val_entries = group[:n_test], group[n_test:]
+            for entry in val_entries:
+                _save_tablet_crop(z, entry, domain, "val", manifest)
+            for entry in test_entries:
+                _save_tablet_crop(z, entry, domain, "test", manifest)
+            print(f"[{domain}] {label}: val={len(val_entries)} test={len(test_entries)} (re-split from valid+test)")
 
 
 def write_manifest(manifest: list) -> None:
@@ -136,6 +171,7 @@ def write_manifest(manifest: list) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--val-fraction", type=float, default=0.1)
+    parser.add_argument("--tablet-test-fraction", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -143,7 +179,13 @@ def main() -> None:
 
     process_mvtec(RAW_DIR / "pill.zip", "pill", args.val_fraction, args.seed, manifest)
     process_mvtec(RAW_DIR / "capsule.zip", "capsule", args.val_fraction, args.seed, manifest)
-    process_tablet_coco(RAW_DIR / "tablet defect detection_annotated.coco.zip", "tablet", manifest)
+    process_tablet_coco(
+        RAW_DIR / "tablet defect detection_annotated.coco.zip",
+        "tablet",
+        args.tablet_test_fraction,
+        args.seed,
+        manifest,
+    )
 
     write_manifest(manifest)
 
